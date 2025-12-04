@@ -234,48 +234,48 @@ jobs:
         
         # Create monitoring script
         $monitorScript = @'
-param([int]$DurationMinutes = 60)
+        param([int]$DurationMinutes = 60)
 
-$endTime = (Get-Date).AddMinutes($DurationMinutes)
-$logFile = "$env:TEMP\rdp_monitor.log"
+        $endTime = (Get-Date).AddMinutes($DurationMinutes)
+        $logFile = "$env:TEMP\rdp_monitor.log"
 
-function Get-SystemInfo {
-    $cpu = Get-CimInstance Win32_Processor | Measure-Object -Property LoadPercentage -Average | Select-Object -ExpandProperty Average
-    $ram = Get-CimInstance Win32_OperatingSystem
-    $usedRAM = [math]::Round(($ram.TotalVisibleMemorySize - $ram.FreePhysicalMemory) / 1MB, 2)
-    $totalRAM = [math]::Round($ram.TotalVisibleMemorySize / 1MB, 2)
-    $ramPercent = [math]::Round(($usedRAM / $totalRAM) * 100, 2)
-    
-    $disk = Get-PSDrive C | Select-Object Used, Free
-    $usedDisk = [math]::Round($disk.Used / 1GB, 2)
-    $freeDisk = [math]::Round($disk.Free / 1GB, 2)
-    $totalDisk = $usedDisk + $freeDisk
-    $diskPercent = [math]::Round(($usedDisk / $totalDisk) * 100, 2)
-    
-    return @{
-        Timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
-        CPU = "$cpu%"
-        RAM = "$usedRAM/$totalRAM GB ($ramPercent%)"
-        Disk = "$usedDisk/$totalDisk GB ($diskPercent%)"
-        Sessions = (qwinsta | Measure-Object -Line).Lines - 1
-        Uptime = [math]::Round(((Get-Date) - (Get-CimInstance Win32_OperatingSystem).LastBootUpTime).TotalHours, 2)
-    }
-}
+        function Get-SystemInfo {
+            $cpu = Get-CimInstance Win32_Processor | Measure-Object -Property LoadPercentage -Average | Select-Object -ExpandProperty Average
+            $ram = Get-CimInstance Win32_OperatingSystem
+            $usedRAM = [math]::Round(($ram.TotalVisibleMemorySize - $ram.FreePhysicalMemory) / 1MB, 2)
+            $totalRAM = [math]::Round($ram.TotalVisibleMemorySize / 1MB, 2)
+            $ramPercent = [math]::Round(($usedRAM / $totalRAM) * 100, 2)
+            
+            $disk = Get-PSDrive C | Select-Object Used, Free
+            $usedDisk = [math]::Round($disk.Used / 1GB, 2)
+            $freeDisk = [math]::Round($disk.Free / 1GB, 2)
+            $totalDisk = $usedDisk + $freeDisk
+            $diskPercent = [math]::Round(($usedDisk / $totalDisk) * 100, 2)
+            
+            return @{
+                Timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+                CPU = "$cpu%"
+                RAM = "$usedRAM/$totalRAM GB ($ramPercent%)"
+                Disk = "$usedDisk/$totalDisk GB ($diskPercent%)"
+                Sessions = (qwinsta | Measure-Object -Line).Lines - 1
+                Uptime = [math]::Round(((Get-Date) - (Get-CimInstance Win32_OperatingSystem).LastBootUpTime).TotalHours, 2)
+            }
+        }
 
-"Monitoring RDP session for $DurationMinutes minutes..." | Out-File -FilePath $logFile
-"Started at: $(Get-Date)" | Out-File -FilePath $logFile -Append
-"=" * 50 | Out-File -FilePath $logFile -Append
+        "Monitoring RDP session for $DurationMinutes minutes..." | Out-File -FilePath $logFile
+        "Started at: $(Get-Date)" | Out-File -FilePath $logFile -Append
+        "=" * 50 | Out-File -FilePath $logFile -Append
 
-while ((Get-Date) -lt $endTime) {
-    $info = Get-SystemInfo
-    $logEntry = "$($info.Timestamp) | CPU: $($info.CPU) | RAM: $($info.RAM) | Disk: $($info.Disk) | Sessions: $($info.Sessions) | Uptime: $($info.Uptime)h"
-    $logEntry | Out-File -FilePath $logFile -Append
-    Write-Host $logEntry
-    Start-Sleep -Seconds 60
-}
+        while ((Get-Date) -lt $endTime) {
+            $info = Get-SystemInfo
+            $logEntry = "$($info.Timestamp) | CPU: $($info.CPU) | RAM: $($info.RAM) | Disk: $($info.Disk) | Sessions: $($info.Sessions) | Uptime: $($info.Uptime)h"
+            $logEntry | Out-File -FilePath $logFile -Append
+            Write-Host $logEntry
+            Start-Sleep -Seconds 60
+        }
 
-"Monitoring completed at: $(Get-Date)" | Out-File -FilePath $logFile -Append
-'@
+        "Monitoring completed at: $(Get-Date)" | Out-File -FilePath $logFile -Append
+        '@
         
         # Save and schedule monitoring script
         $scriptPath = "$env:TEMP\Monitor-RDP.ps1"
@@ -379,23 +379,23 @@ while ((Get-Date) -lt $endTime) {
         
         # Create a summary file
         $summary = @"
-RDP Connection Summary
-======================
-Timestamp: $(Get-Date -Format "yyyy-MM-dd HH:mm:ss")
-IP Address: $env:TAILSCALE_IP
-Hostname: $env:TAILSCALE_HOSTNAME
-Username: $env:RDP_USERNAME
-Password: $env:RDP_PASSWORD
-GitHub Run ID: $env:GITHUB_RUN_ID
-Workflow: $env:GITHUB_WORKFLOW
-Session Duration: ${{ github.event.inputs.session_duration || '360' }} minutes
+        RDP Connection Summary
+        ======================
+        Timestamp: $(Get-Date -Format "yyyy-MM-dd HH:mm:ss")
+        IP Address: $env:TAILSCALE_IP
+        Hostname: $env:TAILSCALE_HOSTNAME
+        Username: $env:RDP_USERNAME
+        Password: $env:RDP_PASSWORD
+        GitHub Run ID: $env:GITHUB_RUN_ID
+        Workflow: $env:GITHUB_WORKFLOW
+        Session Duration: ${{ github.event.inputs.session_duration || '360' }} minutes
 
-Connection Command:
-mstsc /v:$env:TAILSCALE_IP
-"@
-        
-        $summary | Out-File -FilePath "$env:TEMP\rdp_connection.txt" -Encoding UTF8
-        Write-Host "✅ Connection details saved to: $env:TEMP\rdp_connection.txt"
+        Connection Command:
+        mstsc /v:$env:TAILSCALE_IP
+        "@
+                
+                $summary | Out-File -FilePath "$env:TEMP\rdp_connection.txt" -Encoding UTF8
+                Write-Host "✅ Connection details saved to: $env:TEMP\rdp_connection.txt"
 
     - name: ⏳ Maintain RDP Session
       timeout-minutes: ${{ github.event.inputs.session_duration || '360' }}
