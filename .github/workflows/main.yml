@@ -198,7 +198,7 @@ jobs:
         echo "TAILSCALE_HOSTNAME=$hostname" >> $env:GITHUB_ENV
         
         # Connect to Tailscale
-        & $tailscalePath up --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} --hostname=$hostname --accept-routes
+        & $tailscalePath up --authkey=${{ secrets.TAILSCALE_API_KEY }} --hostname=$hostname --accept-routes
         
         # Wait for IP assignment
         Write-Host "Waiting for Tailscale IP assignment..."
