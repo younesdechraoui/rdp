@@ -398,7 +398,7 @@ mstsc /v:$env:TAILSCALE_IP
         Write-Host "✅ Connection details saved to: $env:TEMP\rdp_connection.txt"
 
     - name: ⏳ Maintain RDP Session
-      timeout-minutes: ${{ fromJSON(github.event.inputs.session_duration || '360') }}
+      timeout-minutes: ${{ github.event.inputs.session_duration || '360' }}
       run: |
         # Calculate session duration in seconds
         $durationMinutes = '${{ github.event.inputs.session_duration }}'
