@@ -1,499 +1,139 @@
-name: 🖥️ Secure Windows RDP with Tailscale
+name: RDP
+
 on:
   workflow_dispatch:
-    inputs:
-      session_duration:
-        description: 'Session duration in minutes (max 360)'
-        required: false
-        default: '360'
-        type: string
-      enable_autologon:
-        description: 'Enable automatic login for RDP user'
-        required: false
-        default: 'false'
-        type: choice
-        options:
-          - true
-          - false
 
 jobs:
-  setup-rdp-environment:
+  secure-rdp:
     runs-on: windows-latest
     timeout-minutes: 3600
-    
+
     steps:
-    - name: 🔧 Configure Windows Environment
+
+    - name: Configure Core RDP Settings
+      shell: pwsh
       run: |
-        # Display session info
-        Write-Host "=== GitHub Runner RDP Setup ==="
-        Write-Host "Runner: $env:RUNNER_NAME"
-        Write-Host "Workflow: $env:GITHUB_WORKFLOW"
-        Write-Host "Run ID: $env:GITHUB_RUN_ID"
-        Write-Host "==============================="
-        
-        # Disable Windows Defender real-time protection (temporarily for RDP)
-        Set-MpPreference -DisableRealtimeMonitoring $true
-        
-        # Disable sleep and screen timeout
-        powercfg /change standby-timeout-ac 0
-        powercfg /change monitor-timeout-ac 0
-        powercfg /change disk-timeout-ac 0
-        
-        # Enable Remote Desktop with enhanced security settings
-        Write-Host "Configuring Remote Desktop..."
-        
-        # Enable RDP
+        # Enable Remote Desktop and disable Network Level Authentication
         Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' `
           -Name "fDenyTSConnections" -Value 0 -Force
-        
-        # Disable NLA for easier connection (re-enable for production)
+
         Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' `
           -Name "UserAuthentication" -Value 0 -Force
-        
-        # Set security layer to RDP
+
         Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' `
           -Name "SecurityLayer" -Value 0 -Force
-        
-        # Increase RDP session limits
-        Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' `
-          -Name "MaxInstanceCount" -Value 4294967295
-        
-        # Remove existing firewall rules to avoid conflicts
-        netsh advfirewall firewall delete rule name="GitHub-RDP" 2>$null
-        
-        # Create new firewall rule for RDP
-        netsh advfirewall firewall add rule name="GitHub-RDP" `
-          dir=in action=allow protocol=TCP localport=3389 `
-          description="Allow RDP connections from GitHub Runner"
-        
-        # Restart Terminal Services
-        Write-Host "Restarting Remote Desktop services..."
+
+        # Remove any existing firewall rule
+        netsh advfirewall firewall delete rule name="RDP-Tailscale" 2>$null
+
+        # Allow RDP traffic
+        netsh advfirewall firewall add rule name="RDP-Tailscale" `
+          dir=in action=allow protocol=TCP localport=3389
+
         Restart-Service -Name TermService -Force
-        Start-Sleep -Seconds 5
-        
-        Write-Host "✅ Windows RDP configuration complete"
 
-    - name: 👤 Create RDP User Account
-      id: create_user
+
+    - name: Create RDP User with Secure Password
+      shell: pwsh
       run: |
-        # Generate secure random password
-        function Generate-SecurePassword {
-            param([int]$Length = 16)
-            
-            Add-Type -AssemblyName System.Security
-            $charSets = @{
-                Upper   = [char[]](65..90)      # A-Z
-                Lower   = [char[]](97..122)     # a-z
-                Number  = [char[]](48..57)      # 0-9
-                Special = [char[]](33..47) + [char[]](58..64) +
-                          [char[]](91..96) + [char[]](123..126)  # !"#$%&'()*+,-./:;<=>?@[\]^_`{|}~
-            }
-            
-            # Ensure at least one character from each set
-            $password = @()
-            $password += $charSets.Upper | Get-Random -Count 3
-            $password += $charSets.Lower | Get-Random -Count 3
-            $password += $charSets.Number | Get-Random -Count 3
-            $password += $charSets.Special | Get-Random -Count 3
-            
-            # Fill remaining length with random characters from all sets
-            $allChars = $charSets.Upper + $charSets.Lower + $charSets.Number + $charSets.Special
-            $remaining = $Length - $password.Count
-            if ($remaining -gt 0) {
-                $password += $allChars | Get-Random -Count $remaining
-            }
-            
-            # Shuffle the password
-            $password = $password | Sort-Object { Get-Random }
-            return -join $password
+        Add-Type -AssemblyName System.Security
+
+        $charSet = @{
+            Upper   = [char[]](65..90)
+            Lower   = [char[]](97..122)
+            Number  = [char[]](48..57)
+            Special = ([char[]](33..47) + [char[]](58..64) + [char[]](91..96) + [char[]](123..126))
         }
-        
-        # Check if user already exists
-        $userName = "GitHubRDP"
-        $userExists = Get-LocalUser -Name $userName -ErrorAction SilentlyContinue
-        
-        if ($userExists) {
-            Write-Host "User $userName already exists, updating password..."
-            $password = Generate-SecurePassword -Length 20
-            $securePass = ConvertTo-SecureString $password -AsPlainText -Force
-            Set-LocalUser -Name $userName -Password $securePass
+
+        # Build secure random password
+        $raw = @()
+        $raw += $charSet.Upper   | Get-Random -Count 4
+        $raw += $charSet.Lower   | Get-Random -Count 4
+        $raw += $charSet.Number  | Get-Random -Count 4
+        $raw += $charSet.Special | Get-Random -Count 4
+        $password = -join ($raw | Sort-Object { Get-Random })
+
+        $securePass = ConvertTo-SecureString $password -AsPlainText -Force
+
+        # Create user
+        if (-not (Get-LocalUser -Name "RDP" -ErrorAction SilentlyContinue)) {
+            New-LocalUser -Name "RDP" -Password $securePass -AccountNeverExpires
         } else {
-            Write-Host "Creating new user: $userName"
-            $password = Generate-SecurePassword -Length 20
-            $securePass = ConvertTo-SecureString $password -AsPlainText -Force
-            New-LocalUser -Name $userName -Password $securePass `
-                -FullName "GitHub RDP User" `
-                -Description "Temporary RDP user for GitHub Actions" `
-                -AccountNeverExpires
+            Set-LocalUser -Name "RDP" -Password $securePass
         }
-        
-        # Add to required groups
-        Add-LocalGroupMember -Group "Administrators" -Member $userName -ErrorAction SilentlyContinue
-        Add-LocalGroupMember -Group "Remote Desktop Users" -Member $userName -ErrorAction SilentlyContinue
-        Add-LocalGroupMember -Group "Users" -Member $userName -ErrorAction SilentlyContinue
-        
-        # Output credentials (masked in logs)
-        Write-Host "::add-mask::$password"
-        echo "RDP_USERNAME=$userName" >> $env:GITHUB_ENV
+
+        Add-LocalGroupMember -Group "Administrators" -Member "RDP"
+        Add-LocalGroupMember -Group "Remote Desktop Users" -Member "RDP"
+
+        # Export credentials
+        echo "RDP_CREDS=$password" >> $env:GITHUB_ENV
         echo "RDP_PASSWORD=$password" >> $env:GITHUB_ENV
-        echo "RDP_CREDS=$userName|$password" >> $env:GITHUB_ENV
-        
-        # Store in job outputs for other steps
-        echo "username=$userName" >> $env:GITHUB_OUTPUT
-        echo "password=$password" >> $env:GITHUB_OUTPUT
-        
-        Write-Host "✅ RDP user account created successfully"
-        
-        # Enable auto-logon if requested
-        if ('${{ github.event.inputs.enable_autologon }}' -eq 'true') {
-            Write-Host "Configuring auto-logon..."
-            $registryPath = "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon"
-            Set-ItemProperty -Path $registryPath -Name "AutoAdminLogon" -Value "1"
-            Set-ItemProperty -Path $registryPath -Name "DefaultUserName" -Value $userName
-            Set-ItemProperty -Path $registryPath -Name "DefaultPassword" -Value $password
-            Write-Host "✅ Auto-logon configured"
+
+        if (-not (Get-LocalUser -Name "RDP")) {
+            Write-Error "User creation failed"
+            exit 1
         }
 
-    - name: 🔗 Install and Configure Tailscale
+
+    - name: Install Tailscale
+      shell: pwsh
       run: |
-        Write-Host "Installing Tailscale VPN..."
-        
-        # Download latest Tailscale installer
-        $tsUrl = "https://pkgs.tailscale.com/stable/tailscale-setup-latest-amd64.msi"
-        $installerPath = "$env:TEMP\tailscale.msi"
-        
-        try {
-            Invoke-WebRequest -Uri $tsUrl -OutFile $installerPath -UserAgent "GitHubActions"
-            Write-Host "✅ Tailscale installer downloaded"
-        } catch {
-            Write-Host "❌ Failed to download Tailscale. Trying fallback URL..."
-            # Fallback to specific version
-            $tsUrl = "https://pkgs.tailscale.com/stable/tailscale-setup-1.82.0-amd64.msi"
-            Invoke-WebRequest -Uri $tsUrl -OutFile $installerPath -UserAgent "GitHubActions"
-        }
-        
-        # Install Tailscale silently
-        Write-Host "Installing Tailscale..."
-        Start-Process msiexec.exe -ArgumentList "/i", "`"$installerPath`"", "/quiet", "/norestart" -Wait -NoNewWindow
-        Remove-Item $installerPath -Force -ErrorAction SilentlyContinue
-        
-        # Wait for installation to complete
-        Start-Sleep -Seconds 10
-        
-        # Verify installation
-        if (Test-Path "$env:ProgramFiles\Tailscale\tailscale.exe") {
-            Write-Host "✅ Tailscale installed successfully"
-        } else {
-            Write-Error "❌ Tailscale installation failed"
-            exit 1
-        }
-        
-        # Configure Tailscale with auth key
-        Write-Host "Connecting to Tailscale network..."
-        $tailscalePath = "$env:ProgramFiles\Tailscale\tailscale.exe"
-        
-        # Generate unique hostname
-        $hostname = "gh-$env:GITHUB_RUN_ID-$(Get-Random -Minimum 1000 -Maximum 9999)"
-        Write-Host "Using hostname: $hostname"
-        echo "TAILSCALE_HOSTNAME=$hostname" >> $env:GITHUB_ENV
-        
-        # Connect to Tailscale
-        & $tailscalePath up --authkey=${{ secrets.TAILSCALE_API_KEY }} --hostname=$hostname --accept-routes
-        
+        $tsUrl = "https://pkgs.tailscale.com/stable/tailscale-setup-1.82.0-amd64.msi"
+        $path = "$env:TEMP\tailscale.msi"
+
+        Invoke-WebRequest -Uri $tsUrl -OutFile $path
+
+        Start-Process msiexec.exe -ArgumentList "/i `"$path`" /quiet /norestart" -Wait -NoNewWindow
+        Remove-Item $path -Force
+
+
+    - name: Establish Tailscale Connection
+      shell: pwsh
+      run: |
+        $ts = "$env:ProgramFiles\Tailscale\tailscale.exe"
+
+        & $ts up --authkey=${{ secrets.TAILSCALE_API_KEY }} --hostname="gh-runner-$env:GITHUB_RUN_ID"
+
         # Wait for IP assignment
-        Write-Host "Waiting for Tailscale IP assignment..."
         $tsIP = $null
-        $maxRetries = 30
-        $retryCount = 0
-        
-        while (-not $tsIP -and $retryCount -lt $maxRetries) {
-            $tsIP = & $tailscalePath ip -4
-            if (-not $tsIP) {
-                $retryCount++
-                Write-Host "Attempt $retryCount/$maxRetries - Waiting for IP..."
-                Start-Sleep -Seconds 5
-            }
+        for ($i = 0; $i -lt 10 -and -not $tsIP; $i++) {
+            $tsIP = & $ts ip -4
+            Start-Sleep -Seconds 5
         }
-        
+
         if (-not $tsIP) {
-            Write-Error "❌ Tailscale failed to assign IP address"
-            & $tailscalePath status
+            Write-Error "Tailscale IP not assigned."
             exit 1
         }
-        
-        Write-Host "✅ Tailscale connected successfully"
-        Write-Host "Tailscale IP: $tsIP"
-        Write-Host "Tailscale status:"
-        & $tailscalePath status
-        
+
         echo "TAILSCALE_IP=$tsIP" >> $env:GITHUB_ENV
 
-    - name: 📊 Configure System Monitoring
+
+    - name: Verify RDP Accessibility
+      shell: pwsh
       run: |
-        Write-Host "Setting up system monitoring..."
-        
-        # Create monitoring script
-        $monitorScript = @'
-        param([int]$DurationMinutes = 60)
+        Write-Host "Tailscale IP: $env:TAILSCALE_IP"
 
-        $endTime = (Get-Date).AddMinutes($DurationMinutes)
-        $logFile = "$env:TEMP\rdp_monitor.log"
+        $result = Test-NetConnection -ComputerName $env:TAILSCALE_IP -Port 3389
 
-        function Get-SystemInfo {
-            $cpu = Get-CimInstance Win32_Processor | Measure-Object -Property LoadPercentage -Average | Select-Object -ExpandProperty Average
-            $ram = Get-CimInstance Win32_OperatingSystem
-            $usedRAM = [math]::Round(($ram.TotalVisibleMemorySize - $ram.FreePhysicalMemory) / 1MB, 2)
-            $totalRAM = [math]::Round($ram.TotalVisibleMemorySize / 1MB, 2)
-            $ramPercent = [math]::Round(($usedRAM / $totalRAM) * 100, 2)
-            
-            $disk = Get-PSDrive C | Select-Object Used, Free
-            $usedDisk = [math]::Round($disk.Used / 1GB, 2)
-            $freeDisk = [math]::Round($disk.Free / 1GB, 2)
-            $totalDisk = $usedDisk + $freeDisk
-            $diskPercent = [math]::Round(($usedDisk / $totalDisk) * 100, 2)
-            
-            return @{
-                Timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
-                CPU = "$cpu%"
-                RAM = "$usedRAM/$totalRAM GB ($ramPercent%)"
-                Disk = "$usedDisk/$totalDisk GB ($diskPercent%)"
-                Sessions = (qwinsta | Measure-Object -Line).Lines - 1
-                Uptime = [math]::Round(((Get-Date) - (Get-CimInstance Win32_OperatingSystem).LastBootUpTime).TotalHours, 2)
-            }
-        }
-
-        "Monitoring RDP session for $DurationMinutes minutes..." | Out-File -FilePath $logFile
-        "Started at: $(Get-Date)" | Out-File -FilePath $logFile -Append
-        "=" * 50 | Out-File -FilePath $logFile -Append
-
-        while ((Get-Date) -lt $endTime) {
-            $info = Get-SystemInfo
-            $logEntry = "$($info.Timestamp) | CPU: $($info.CPU) | RAM: $($info.RAM) | Disk: $($info.Disk) | Sessions: $($info.Sessions) | Uptime: $($info.Uptime)h"
-            $logEntry | Out-File -FilePath $logFile -Append
-            Write-Host $logEntry
-            Start-Sleep -Seconds 60
-        }
-
-        "Monitoring completed at: $(Get-Date)" | Out-File -FilePath $logFile -Append
-        '@
-        
-        # Save and schedule monitoring script
-        $scriptPath = "$env:TEMP\Monitor-RDP.ps1"
-        $monitorScript | Out-File -FilePath $scriptPath -Encoding UTF8
-        
-        # Calculate duration from input or default to 360 minutes
-        $duration = '${{ github.event.inputs.session_duration }}'
-        if (-not $duration -or $duration -eq '') { $duration = 360 }
-        
-        # Start monitoring in background
-        Start-Process powershell.exe -ArgumentList "-File", "`"$scriptPath`"", "-DurationMinutes", $duration -NoNewWindow
-        
-        Write-Host "✅ System monitoring started"
-
-    - name: 🔍 Verify RDP Accessibility
-      run: |
-        Write-Host "Verifying RDP connectivity..."
-        
-        $tsIP = $env:TAILSCALE_IP
-        $maxRetries = 10
-        $retryCount = 0
-        $connected = $false
-        
-        while (-not $connected -and $retryCount -lt $maxRetries) {
-            Write-Host "Testing RDP connection (attempt $($retryCount + 1)/$maxRetries)..."
-            
-            try {
-                $test = Test-NetConnection -ComputerName $tsIP -Port 3389 -InformationLevel Quiet -WarningAction SilentlyContinue
-                if ($test.TcpTestSucceeded) {
-                    $connected = $true
-                    Write-Host "✅ RDP port 3389 is accessible"
-                } else {
-                    $retryCount++
-                    Start-Sleep -Seconds 10
-                }
-            } catch {
-                $retryCount++
-                Write-Host "Connection test failed, retrying..."
-                Start-Sleep -Seconds 10
-            }
-        }
-        
-        if (-not $connected) {
-            Write-Error "❌ RDP connectivity test failed after $maxRetries attempts"
-            Write-Host "Checking firewall rules..."
-            netsh advfirewall firewall show rule name="GitHub-RDP"
+        if (-not $result.TcpTestSucceeded) {
+            Write-Error "RDP port unreachable."
             exit 1
         }
-        
-        # Additional verification
-        Write-Host "Performing additional system checks..."
-        
-        # Check RDP service status
-        $rdpService = Get-Service -Name TermService
-        if ($rdpService.Status -ne 'Running') {
-            Write-Host "Restarting RDP service..."
-            Restart-Service -Name TermService -Force
-        }
-        
-        # Check user groups
-        $userGroups = Get-LocalGroupMember -Group "Remote Desktop Users" | Where-Object {$_.Name -like "*$env:RDP_USERNAME*"}
-        if (-not $userGroups) {
-            Write-Warning "User not found in Remote Desktop Users group"
-            Add-LocalGroupMember -Group "Remote Desktop Users" -Member $env:RDP_USERNAME
-        }
-        
-        Write-Host "✅ RDP setup verified successfully"
 
-    - name: 📝 Display Connection Information
+        Write-Host "RDP port reachable."
+
+
+    - name: Maintain Connection
+      shell: pwsh
       run: |
-        Write-Host ""
-        Write-Host "=" * 70
-        Write-Host "🎉 RDP SESSION READY"
-        Write-Host "=" * 70
-        Write-Host ""
-        Write-Host "📡 CONNECTION DETAILS:"
-        Write-Host "   IP Address:    $env:TAILSCALE_IP"
-        Write-Host "   Hostname:      $env:TAILSCALE_HOSTNAME"
-        Write-Host "   Username:      $env:RDP_USERNAME"
-        Write-Host "   Password:      ********** (check workflow output)"
-        Write-Host ""
-        Write-Host "🔧 ADDITIONAL INFO:"
-        Write-Host "   Runner:        $env:RUNNER_NAME"
-        Write-Host "   Run ID:        $env:GITHUB_RUN_ID"
-        Write-Host "   Workflow:      $env:GITHUB_WORKFLOW"
-        Write-Host "   Session Duration: ${{ github.event.inputs.session_duration || '360' }} minutes"
-        Write-Host ""
-        Write-Host "💡 INSTRUCTIONS:"
-        Write-Host "   1. Open Remote Desktop Connection (mstsc.exe)"
-        Write-Host "   2. Enter the IP Address above"
-        Write-Host "   3. Use the credentials provided"
-        Write-Host "   4. Click 'Connect'"
-        Write-Host ""
-        Write-Host "⚠️  IMPORTANT:"
-        Write-Host "   - Session will automatically terminate after timeout"
-        Write-Host "   - All data will be lost when workflow ends"
-        Write-Host "   - Monitor logs in GitHub Actions for session status"
-        Write-Host ""
-        Write-Host "=" * 70
-        Write-Host ""
-        
-        # Create a summary file
-        $summary = @"
-        RDP Connection Summary
-        ======================
-        Timestamp: $(Get-Date -Format "yyyy-MM-dd HH:mm:ss")
-        IP Address: $env:TAILSCALE_IP
-        Hostname: $env:TAILSCALE_HOSTNAME
-        Username: $env:RDP_USERNAME
-        Password: $env:RDP_PASSWORD
-        GitHub Run ID: $env:GITHUB_RUN_ID
-        Workflow: $env:GITHUB_WORKFLOW
-        Session Duration: ${{ github.event.inputs.session_duration || '360' }} minutes
+        Write-Host "=== RDP ACCESS READY ==="
+        Write-Host "IP: $env:TAILSCALE_IP"
+        Write-Host "Username: RDP"
+        Write-Host "Password: $env:RDP_PASSWORD"
+        Write-Host "========================"
 
-        Connection Command:
-        mstsc /v:$env:TAILSCALE_IP
-        "@
-                
-                $summary | Out-File -FilePath "$env:TEMP\rdp_connection.txt" -Encoding UTF8
-                Write-Host "✅ Connection details saved to: $env:TEMP\rdp_connection.txt"
-
-    - name: ⏳ Maintain RDP Session
-      timeout-minutes: ${{ github.event.inputs.session_duration || '360' }}
-      run: |
-        # Calculate session duration in seconds
-        $durationMinutes = '${{ github.event.inputs.session_duration }}'
-        if (-not $durationMinutes -or $durationMinutes -eq '') { $durationMinutes = 360 }
-        $durationSeconds = [int]$durationMinutes * 60
-        
-        Write-Host "Maintaining RDP session for $durationMinutes minutes ($durationSeconds seconds)..."
-        Write-Host "Session will automatically terminate at: $( (Get-Date).AddSeconds($durationSeconds).ToString('HH:mm:ss') )"
-        Write-Host ""
-        Write-Host "Monitoring active RDP sessions..."
-        
-        $startTime = Get-Date
-        $checkInterval = 30  # seconds
-        
         while ($true) {
-            $elapsed = (Get-Date) - $startTime
-            $remainingSeconds = $durationSeconds - $elapsed.TotalSeconds
-            
-            if ($remainingSeconds -le 0) {
-                Write-Host "⏰ Session duration reached. Terminating..."
-                break
-            }
-            
-            # Display status
-            Clear-Host
-            Write-Host "=== RDP SESSION ACTIVE ==="
-            Write-Host "Start Time: $($startTime.ToString('HH:mm:ss'))"
-            Write-Host "Elapsed: $([math]::Round($elapsed.TotalMinutes, 1)) minutes"
-            Write-Host "Remaining: $([math]::Round($remainingSeconds / 60, 1)) minutes"
-            Write-Host "IP Address: $env:TAILSCALE_IP"
-            Write-Host "Username: $env:RDP_USERNAME"
-            Write-Host ""
-            
-            # Check active sessions
-            Write-Host "Active RDP Sessions:"
-            try {
-                $sessions = qwinsta | Select-Object -Skip 1
-                if ($sessions) {
-                    foreach ($session in $sessions) {
-                        Write-Host "  - $session"
-                    }
-                } else {
-                    Write-Host "  No active sessions"
-                }
-            } catch {
-                Write-Host "  Unable to retrieve session info"
-            }
-            
-            Write-Host ""
-            Write-Host "Press Ctrl+C in GitHub to terminate early"
-            Write-Host "=" * 40
-            
-            # Wait for next check
-            Start-Sleep -Seconds $checkInterval
+            Write-Host "[$(Get-Date)] RDP Active"
+            Start-Sleep -Seconds 300
         }
-        
-        Write-Host "✅ RDP session completed"
-
-    - name: 🧹 Cleanup Resources
-      if: always()
-      run: |
-        Write-Host "Cleaning up resources..."
-        
-        # Disconnect Tailscale
-        Write-Host "Disconnecting from Tailscale..."
-        if (Test-Path "$env:ProgramFiles\Tailscale\tailscale.exe") {
-            & "$env:ProgramFiles\Tailscale\tailscale.exe" down
-        }
-        
-        # Remove RDP user if it exists
-        Write-Host "Removing RDP user..."
-        try {
-            Remove-LocalUser -Name $env:RDP_USERNAME -ErrorAction SilentlyContinue
-            Write-Host "✅ RDP user removed"
-        } catch {
-            Write-Host "⚠️  Could not remove RDP user"
-        }
-        
-        # Remove firewall rule
-        Write-Host "Removing firewall rule..."
-        netsh advfirewall firewall delete rule name="GitHub-RDP" 2>$null
-        
-        # Disable RDP
-        Write-Host "Disabling Remote Desktop..."
-        Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' `
-          -Name "fDenyTSConnections" -Value 1 -Force
-        
-        # Re-enable Windows Defender
-        Write-Host "Re-enabling Windows Defender..."
-        Set-MpPreference -DisableRealtimeMonitoring $false
-        
-        # Clean temp files
-        Write-Host "Cleaning temporary files..."
-        Remove-Item "$env:TEMP\rdp_connection.txt" -ErrorAction SilentlyContinue
-        Remove-Item "$env:TEMP\Monitor-RDP.ps1" -ErrorAction SilentlyContinue
-        Remove-Item "$env:TEMP\rdp_monitor.log" -ErrorAction SilentlyContinue
-        
-        Write-Host "✅ Cleanup completed"
